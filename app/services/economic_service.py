@@ -1,4 +1,7 @@
 import pandas as pd
+import httpx
+import time
+from supabase import create_client
 from app.db.supabase import supabase
 # stock.py는 아직 모듈로 옮기지 않았으므로 기존 임포트 유지
 from stock import collect_economic_data
@@ -9,6 +12,21 @@ import pytz
 from app.core.config import settings
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
 from app.services.stock_recommendation_service import StockRecommendationService
+
+def _make_supabase():
+    return create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+
+def _sb_execute(fn, retries=3):
+    """HTTP/2 연결 종료 시 새 클라이언트로 재시도."""
+    client = supabase
+    for attempt in range(retries):
+        try:
+            return fn(client)
+        except httpx.RemoteProtocolError:
+            if attempt == retries - 1:
+                raise
+            client = _make_supabase()
+            time.sleep(1)
 
 def get_last_updated_date():
     """
@@ -61,9 +79,9 @@ stock_columns = [
     "닛케이 225", "상해종합", "항셍", "영국 FTSE", "독일 DAX", "프랑스 CAC 40", 
     "미국 전체 채권시장 ETF", "TIPS ETF", "투자등급 회사채 ETF", "달러/엔", "달러/위안",
     "미국 리츠 ETF", "애플", "마이크로소프트", "아마존", "구글 A", "구글 C", "메타", 
-    "테슬라", "엔비디아", "코스트코", "넷플릭스", "페이팔", "인텔", "시스코", "컴캐스트", 
-    "펩시코", "암젠", "허니웰 인터내셔널", "스타벅스", "몬델리즈", "마이크론", "브로드컴", 
-    "어도비", "텍사스 인스트루먼트", "AMD", "어플라이드 머티리얼즈"
+    "테슬라", "엔비디아", "AST SM", "넷플릭스", "코히어런트", "인텔", "로켓랩", "블룸에너지", 
+    "샌디스크", "아이렌", "아이온큐", "오라클", "뉴스케일파워", "마이크론", "브로드컴", 
+    "팔란티어", "텍사스 인스트루먼트", "AMD", "어플라이드 머티리얼즈"
 ]
 
 # 경제 지표 컬럼 목록 정의
@@ -160,7 +178,7 @@ async def update_economic_data_in_background():
                 row = pd.Series(dtype='object')
             
             # 기존 데이터 확인
-            check = supabase.table("economic_and_stock_data").select("*").eq("날짜", date_str).execute()
+            check = _sb_execute(lambda c: c.table("economic_and_stock_data").select("*").eq("날짜", date_str).execute())
             
             # 데이터 딕셔너리 생성
             data_dict = {}
@@ -185,12 +203,12 @@ async def update_economic_data_in_background():
                         update_dict[col_name] = value
                 
                 if update_dict:  # 업데이트할 값이 있는 경우에만
-                    supabase.table("economic_and_stock_data").update(update_dict).eq("날짜", date_str).execute()
+                    _sb_execute(lambda c: c.table("economic_and_stock_data").update(update_dict).eq("날짜", date_str).execute())
             else:
                 # 새 레코드 추가
                 insert_dict = {"날짜": date_str}
                 insert_dict.update(data_dict)
-                supabase.table("economic_and_stock_data").insert(insert_dict).execute()
+                _sb_execute(lambda c: c.table("economic_and_stock_data").insert(insert_dict).execute())
             
             # 현재 데이터를 다음 날짜 처리를 위한 이전 데이터로 설정
             if data_dict:  # 데이터가 있는 경우에만
